@@ -142,15 +142,19 @@ def compute_fold_progress(grab_pt, current_pt, rect, edge):
 # Paper drawing functions
 # ============================================================================
 
-def draw_flat_paper(frame, rect, texture=None):
+def draw_flat_paper(frame, rect, texture=None, texture_crop=None):
     """
     Draw the paper as a flat square.
-    If a texture image is provided it is blended in; otherwise a solid
-    light-lavender colour is used.
+    If texture + texture_crop are provided the correct crop is blended in;
+    otherwise a solid light-lavender colour is used.
     """
     x1, y1, x2, y2 = rect
     roi = frame[y1:y2, x1:x2]
-    if texture is not None:
+    if texture is not None and texture_crop is not None:
+        tx1, ty1, tx2, ty2 = texture_crop
+        region = texture[ty1:ty2, tx1:tx2]
+        cv2.addWeighted(region, 0.85, roi, 0.15, 0, roi)
+    elif texture is not None:
         cv2.addWeighted(texture, 0.85, roi, 0.15, 0, roi)
     else:
         paper_layer = np.full_like(roi, (230, 230, 255))
@@ -158,38 +162,39 @@ def draw_flat_paper(frame, rect, texture=None):
     cv2.rectangle(frame, (x1, y1), (x2, y2), (140, 140, 180), 2)
 
 
-def draw_folded_paper(frame, rect, edge, progress, texture=None):
+def draw_folded_paper(frame, rect, texture_crop, edge, progress, texture=None):
     """
     Draw the paper mid-fold, preserving the paper.png texture on both halves.
+    texture_crop = (tx1, ty1, tx2, ty2) in paper_texture pixel coordinates,
+    representing which slice of the texture maps onto `rect`.
 
     The half indicated by `edge` rotates over the centre fold line:
       progress = 0.0  → paper is flat
       progress = 0.5  → flap is perpendicular (foreshortened to a thin strip)
       progress = 1.0  → flap is fully reflected onto the opposite half
-
-    If `texture` is supplied (a BGR image sized to the paper rect), it is
-    perspective-warped onto both the static half and the animated flap.
-    The back face is a horizontally-flipped, slightly darkened copy.
     """
     x1, y1, x2, y2 = rect
     pw, ph = x2 - x1, y2 - y1
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+    tcrop_x1, tcrop_y1, tcrop_x2, tcrop_y2 = texture_crop
 
     BORDER = (140, 140, 180)
     CREASE = (170, 170, 195)
     taper  = int(min(pw, ph) * 0.08 * np.sin(np.pi * progress))
 
     def blit_half(frame_x1, frame_y1, frame_x2, frame_y2,
-                  tex_x1, tex_y1, tex_x2, tex_y2):
-        """Directly copy a rectangular slice of texture onto a frame region."""
-        region = texture[tex_y1:tex_y2, tex_x1:tex_x2]
+                  rel_tx1, rel_ty1, rel_tx2, rel_ty2):
+        """Copy a texture slice (coords relative to texture_crop) onto a frame region."""
+        region = texture[tcrop_y1 + rel_ty1 : tcrop_y1 + rel_ty2,
+                         tcrop_x1 + rel_tx1 : tcrop_x1 + rel_tx2]
         frame[frame_y1:frame_y2, frame_x1:frame_x2] = region
         cv2.rectangle(frame, (frame_x1, frame_y1), (frame_x2, frame_y2), BORDER, 2)
 
-    def warp_flap(tex_x1, tex_y1, tex_x2, tex_y2, dst_pts, is_back):
-        """Perspective-warp a texture slice onto an arbitrary quad in the frame."""
-        tw, th = tex_x2 - tex_x1, tex_y2 - tex_y1
-        region = texture[tex_y1:tex_y2, tex_x1:tex_x2].copy()
+    def warp_flap(rel_tx1, rel_ty1, rel_tx2, rel_ty2, dst_pts, is_back):
+        """Perspective-warp a texture slice (coords relative to texture_crop) onto a quad."""
+        tw, th = rel_tx2 - rel_tx1, rel_ty2 - rel_ty1
+        region = texture[tcrop_y1 + rel_ty1 : tcrop_y1 + rel_ty2,
+                         tcrop_x1 + rel_tx1 : tcrop_x1 + rel_tx2].copy()
         if is_back:
             region = cv2.flip(region, 1)          # mirror the back face
             region = (region * 0.75).astype(np.uint8)  # slightly darker
@@ -306,12 +311,16 @@ if _paper_src is not None:
     paper_texture = cv2.resize(_paper_src, (x2 - x1, y2 - y1))
 
 # ============================================================================
-# Fold state
+# Fold state  (supports unlimited sequential folds)
 # ============================================================================
-fold_edge      = None   # 'top' | 'bottom' | 'left' | 'right' | None
+fold_history   = []         # list of committed fold edges in order
+active_rect    = paper_rect # shrinks to the remaining half after each fold
+_ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
+texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)  # crop in paper_texture coords
+
+fold_edge      = None   # live fold in progress
 fold_progress  = 0.0    # 0.0 (flat) → 1.0 (fully folded)
-fold_committed = False  # True once the user releases a completed fold
-grab_pt        = None   # pixel coords where the pinch started on the paper
+grab_pt        = None   # pixel coords where the pinch started
 was_pinching   = False  # pinch state from the previous frame
 
 # ============================================================================
@@ -331,9 +340,9 @@ while True:
 
     # ── Draw paper ──────────────────────────────────────────────────────────
     if fold_edge is None:
-        draw_flat_paper(frame, paper_rect, paper_texture)
+        draw_flat_paper(frame, active_rect, paper_texture, texture_rect)
     else:
-        draw_folded_paper(frame, paper_rect, fold_edge, fold_progress, paper_texture)
+        draw_folded_paper(frame, active_rect, texture_rect, fold_edge, fold_progress, paper_texture)
 
     # ── Hand & pinch logic ──────────────────────────────────────────────────
     pinching = False
@@ -344,28 +353,44 @@ while True:
 
         if pinching:
             if not was_pinching:
-                # Pinch just started — begin a fold if on paper and not committed
-                if point_on_paper(pinch_pt, paper_rect) and not fold_committed:
+                # Pinch just started — begin a fold on the current active paper
+                if point_on_paper(pinch_pt, active_rect) and fold_edge is None:
                     grab_pt       = pinch_pt
-                    fold_edge     = get_fold_edge(pinch_pt, paper_rect)
+                    fold_edge     = get_fold_edge(pinch_pt, active_rect)
                     fold_progress = 0.0
             else:
                 # Pinch held — update live fold progress
-                if grab_pt is not None and fold_edge is not None and not fold_committed:
+                if grab_pt is not None and fold_edge is not None:
                     fold_progress = compute_fold_progress(
-                        grab_pt, pinch_pt, paper_rect, fold_edge
+                        grab_pt, pinch_pt, active_rect, fold_edge
                     )
         else:
-            if was_pinching:
-                if fold_edge is not None and fold_progress > 0.3:
+            if was_pinching and fold_edge is not None:
+                if fold_progress > 0.3:
                     # Released past 30 % → commit the fold
-                    fold_committed = True
-                    fold_progress  = 1.0
+                    ax1, ay1, ax2, ay2 = active_rect
+                    acx, acy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
+                    tx1, ty1, tx2, ty2 = texture_rect
+                    tcx, tcy = (tx1 + tx2) // 2, (ty1 + ty2) // 2
+                    if fold_edge == 'top':
+                        active_rect  = (ax1, acy, ax2, ay2)
+                        texture_rect = (tx1, tcy, tx2, ty2)
+                    elif fold_edge == 'bottom':
+                        active_rect  = (ax1, ay1, ax2, acy)
+                        texture_rect = (tx1, ty1, tx2, tcy)
+                    elif fold_edge == 'left':
+                        active_rect  = (acx, ay1, ax2, ay2)
+                        texture_rect = (tcx, ty1, tx2, ty2)
+                    else:  # right
+                        active_rect  = (ax1, ay1, acx, ay2)
+                        texture_rect = (tx1, ty1, tcx, ty2)
+                    fold_history.append(fold_edge)
+                    fold_edge     = None
+                    fold_progress = 0.0
                 else:
                     # Released too early → snap back flat
-                    fold_edge      = None
-                    fold_progress  = 0.0
-                    fold_committed = False
+                    fold_edge     = None
+                    fold_progress = 0.0
             grab_pt = None
 
         draw_finger_tips(frame, landmarks, frame_w, frame_h, pinching)
@@ -379,7 +404,7 @@ while True:
     cv2.putText(frame, hud, (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                 (0, 0, 255) if pinching else (0, 255, 0), 3)
-    cv2.putText(frame, "Pinch paper to fold  |  'r' reset  |  'q' quit",
+    cv2.putText(frame, f"Folds: {len(fold_history)}  |  Pinch paper to fold  |  'r' reset  |  'q' quit",
                 (10, frame_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     cv2.imshow("Origami", frame)
@@ -388,9 +413,12 @@ while True:
     if key == ord('q'):
         break
     elif key == ord('r'):
+        fold_history   = []
+        active_rect    = paper_rect
+        _ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
+        texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
         fold_edge      = None
         fold_progress  = 0.0
-        fold_committed = False
         grab_pt        = None
 
 cap.release()
