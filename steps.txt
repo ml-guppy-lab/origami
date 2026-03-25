@@ -35,4 +35,4 @@ INSTALL DEPENDENCIES
 
 
 
-.venv/bin/python3 scripts/handlandmarker.py
+.venv/bin/python3 scripts/origamiRectangle.py

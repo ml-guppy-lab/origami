@@ -83,11 +83,11 @@ def draw_finger_tips(frame, landmarks, frame_w, frame_h, pinching):
 # Paper geometry helpers
 # ============================================================================
 
-def get_paper_rect(frame_w, frame_h, size=400, offset_x=500):
-    """Return (x1, y1, x2, y2) for a square paper centered in the frame, shifted right by offset_x."""
-    x1 = (frame_w - size) // 2 + offset_x
-    y1 = (frame_h - size) // 2
-    return x1, y1, x1 + size, y1 + size
+def get_paper_rect(frame_w, frame_h, width=250, height=300):
+    """Return (x1, y1, x2, y2) for a vertical rectangle paper centered in the frame."""
+    x1 = (frame_w - width) // 2
+    y1 = (frame_h - height) // 2
+    return x1, y1, x1 + width, y1 + height
 
 
 def point_on_paper(pt, rect):
@@ -97,19 +97,43 @@ def point_on_paper(pt, rect):
     return x1 <= x <= x2 and y1 <= y <= y2
 
 
-def get_fold_edge(pt, rect):
+def get_fold_type(pt, rect, corner_zone=0.30):
     """
-    Decide which half of the paper was grabbed.
-    Returns 'top', 'bottom', 'left', or 'right' depending on which
-    quadrant of the paper the pinch point lands in.
+    Decide whether the pinch lands on a corner or an edge, and which one.
+    Returns (fold_type, direction) where:
+      fold_type = 'corner' → direction in 'top-left'|'top-right'|'bottom-left'|'bottom-right'
+      fold_type = 'edge'   → direction in 'top'|'bottom'|'left'|'right'
+    corner_zone: fraction of paper width/height near each corner that triggers a corner fold.
     """
     x, y = pt
     x1, y1, x2, y2 = rect
+    pw, ph = x2 - x1, y2 - y1
+    nx = (x - x1) / pw   # 0 = left edge, 1 = right edge
+    ny = (y - y1) / ph   # 0 = top edge,  1 = bottom edge
+    in_h_corner = nx < corner_zone or nx > 1 - corner_zone
+    in_v_corner = ny < corner_zone or ny > 1 - corner_zone
+    if in_h_corner and in_v_corner:
+        vert  = 'top'  if ny < 0.5 else 'bottom'
+        horiz = 'left' if nx < 0.5 else 'right'
+        return 'corner', f'{vert}-{horiz}'
     cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
     dx, dy = x - cx, y - cy
     if abs(dy) >= abs(dx):
-        return 'top' if dy < 0 else 'bottom'
-    return 'left' if dx < 0 else 'right'
+        return 'edge', 'top' if dy < 0 else 'bottom'
+    return 'edge', 'left' if dx < 0 else 'right'
+
+
+def get_corner_fold_size(pinch_pt, rect, corner):
+    """Return dog-ear fold size d (pixels) = distance from pinch point to the grabbed corner."""
+    x1, y1, x2, y2 = rect
+    corner_px = {
+        'top-left':     (x1, y1), 'top-right':    (x2, y1),
+        'bottom-left':  (x1, y2), 'bottom-right': (x2, y2),
+    }
+    cx, cy = corner_px[corner]
+    d      = np.sqrt((pinch_pt[0] - cx) ** 2 + (pinch_pt[1] - cy) ** 2)
+    max_d  = min(x2 - x1, y2 - y1) // 2
+    return int(np.clip(d, 0, max_d))
 
 
 def compute_fold_progress(grab_pt, current_pt, rect, edge):
@@ -286,10 +310,83 @@ def draw_folded_paper(frame, rect, texture_crop, edge, progress, texture=None):
                         BACK_COLOR if progress > 0.5 else PAPER_COLOR)
             cv2.line(frame, (cx, y1), (cx, y2), CREASE, 3)
 
+def draw_corner_fold(frame, frame_bg, rect, corner, size, texture=None, texture_crop=None):
+    """
+    Draw a dog-ear corner fold of `size` pixels.
+    The original corner triangle is removed (replaced with camera feed from frame_bg)
+    and the folded flap is drawn at the reflected position inside the paper.
+    """
+    if size <= 0:
+        return
+    x1, y1, x2, y2 = rect
+    BORDER     = (140, 140, 180)
+    CREASE     = (170, 170, 195)
+    BACK_COLOR = (195, 205, 225)
 
-# ============================================================================
-# Camera & paper setup
-# ============================================================================
+    # fold_a and fold_b are the two ends of the diagonal fold line.
+    # orig_corner is the actual corner point; flap_tip is where it lands after reflection.
+    if corner == 'top-left':
+        fold_a      = (x1 + size, y1)
+        fold_b      = (x1, y1 + size)
+        orig_corner = (x1, y1)
+        flap_tip    = (x1 + size, y1 + size)
+    elif corner == 'top-right':
+        fold_a      = (x2 - size, y1)
+        fold_b      = (x2, y1 + size)
+        orig_corner = (x2, y1)
+        flap_tip    = (x2 - size, y1 + size)
+    elif corner == 'bottom-left':
+        fold_a      = (x1 + size, y2)
+        fold_b      = (x1, y2 - size)
+        orig_corner = (x1, y2)
+        flap_tip    = (x1 + size, y2 - size)
+    else:  # bottom-right
+        fold_a      = (x2 - size, y2)
+        fold_b      = (x2, y2 - size)
+        orig_corner = (x2, y2)
+        flap_tip    = (x2 - size, y2 - size)
+
+    corner_tri = [orig_corner, fold_a, fold_b]
+    flap_tri   = [fold_a, fold_b, flap_tip]
+
+    # ── 1. Restore lifted corner to camera feed (the corner is no longer part of the paper) ──
+    corner_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+    cv2.fillPoly(corner_mask, [np.array(corner_tri, dtype=np.int32)], 255)
+    frame[corner_mask > 0] = frame_bg[corner_mask > 0]
+
+    # ── 2. Draw the flap (back face of the lifted corner) at the reflected position ──
+    if texture is not None and texture_crop is not None:
+        tc_x1, tc_y1, tc_x2, tc_y2 = texture_crop
+        # Map the three texture corner points → screen flap points via affine transform.
+        # orig_corner maps to flap_tip (reflected); fold_a and fold_b stay on the fold line.
+        if corner == 'top-left':
+            src = np.float32([[tc_x1,        tc_y1       ],
+                               [tc_x1 + size, tc_y1       ],
+                               [tc_x1,        tc_y1 + size]])
+        elif corner == 'top-right':
+            src = np.float32([[tc_x2,        tc_y1       ],
+                               [tc_x2 - size, tc_y1       ],
+                               [tc_x2,        tc_y1 + size]])
+        elif corner == 'bottom-left':
+            src = np.float32([[tc_x1,        tc_y2       ],
+                               [tc_x1 + size, tc_y2       ],
+                               [tc_x1,        tc_y2 - size]])
+        else:  # bottom-right
+            src = np.float32([[tc_x2,        tc_y2       ],
+                               [tc_x2 - size, tc_y2       ],
+                               [tc_x2,        tc_y2 - size]])
+        dst    = np.float32([list(flap_tip), list(fold_a), list(fold_b)])
+        M      = cv2.getAffineTransform(src, dst)
+        warped = cv2.warpAffine(texture, M, (frame.shape[1], frame.shape[0]))
+        warped = (warped * 0.68).astype(np.uint8)  # darker back face
+        flap_mask = np.zeros((frame.shape[0], frame.shape[1]), dtype=np.uint8)
+        cv2.fillPoly(flap_mask, [np.array(flap_tri, dtype=np.int32)], 255)
+        frame[flap_mask > 0] = warped[flap_mask > 0]
+    else:
+        cv2.fillPoly(frame, [np.array(flap_tri, dtype=np.int32)], BACK_COLOR)
+
+    cv2.polylines(frame, [np.array(flap_tri,   dtype=np.int32)], True, BORDER, 2)
+    cv2.line(frame, fold_a, fold_b, CREASE, 3)
 cap = cv2.VideoCapture(0)
 if not cap.isOpened():
     print("Failed to open camera. Check permissions.")
@@ -318,10 +415,13 @@ active_rect    = paper_rect # shrinks to the remaining half after each fold
 _ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
 texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)  # crop in paper_texture coords
 
-fold_edge      = None   # live fold in progress
-fold_progress  = 0.0    # 0.0 (flat) → 1.0 (fully folded)
-grab_pt        = None   # pixel coords where the pinch started
-was_pinching   = False  # pinch state from the previous frame
+fold_edge        = None   # live edge fold direction ('top'|'bottom'|'left'|'right')
+fold_progress    = 0.0    # 0.0 (flat) → 1.0 (fully folded)
+fold_corner      = None   # live corner fold ('top-left'|'top-right'|'bottom-left'|'bottom-right')
+fold_corner_size = 0      # dog-ear size in pixels for the live corner fold
+corner_folds     = []     # committed corner folds: list of (direction, size)
+grab_pt          = None   # pixel coords where the pinch started
+was_pinching     = False  # pinch state from the previous frame
 
 # ============================================================================
 # Main loop
@@ -339,10 +439,16 @@ while True:
     result    = detector.detect(mp_image)
 
     # ── Draw paper ──────────────────────────────────────────────────────────
+    frame_bg = frame.copy()  # save camera feed before drawing paper (needed for corner fold clearing)
     if fold_edge is None:
         draw_flat_paper(frame, active_rect, paper_texture, texture_rect)
     else:
         draw_folded_paper(frame, active_rect, texture_rect, fold_edge, fold_progress, paper_texture)
+    # Draw committed corner folds, then any live corner fold, on top
+    for cf_dir, cf_size in corner_folds:
+        draw_corner_fold(frame, frame_bg, active_rect, cf_dir, cf_size, paper_texture, texture_rect)
+    if fold_corner is not None and fold_corner_size > 0:
+        draw_corner_fold(frame, frame_bg, active_rect, fold_corner, fold_corner_size, paper_texture, texture_rect)
 
     # ── Hand & pinch logic ──────────────────────────────────────────────────
     pinching = False
@@ -354,43 +460,57 @@ while True:
         if pinching:
             if not was_pinching:
                 # Pinch just started — begin a fold on the current active paper
-                if point_on_paper(pinch_pt, active_rect) and fold_edge is None:
-                    grab_pt       = pinch_pt
-                    fold_edge     = get_fold_edge(pinch_pt, active_rect)
-                    fold_progress = 0.0
+                if point_on_paper(pinch_pt, active_rect) and fold_edge is None and fold_corner is None:
+                    grab_pt = pinch_pt
+                    fold_mode, fold_dir = get_fold_type(pinch_pt, active_rect)
+                    if fold_mode == 'edge':
+                        fold_edge     = fold_dir
+                        fold_progress = 0.0
+                    else:  # corner
+                        fold_corner      = fold_dir
+                        fold_corner_size = get_corner_fold_size(pinch_pt, active_rect, fold_dir)
             else:
                 # Pinch held — update live fold progress
-                if grab_pt is not None and fold_edge is not None:
-                    fold_progress = compute_fold_progress(
-                        grab_pt, pinch_pt, active_rect, fold_edge
-                    )
+                if grab_pt is not None:
+                    if fold_edge is not None:
+                        fold_progress = compute_fold_progress(
+                            grab_pt, pinch_pt, active_rect, fold_edge
+                        )
+                    elif fold_corner is not None:
+                        fold_corner_size = get_corner_fold_size(pinch_pt, active_rect, fold_corner)
         else:
-            if was_pinching and fold_edge is not None:
-                if fold_progress > 0.3:
-                    # Released past 30 % → commit the fold
-                    ax1, ay1, ax2, ay2 = active_rect
-                    acx, acy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
-                    tx1, ty1, tx2, ty2 = texture_rect
-                    tcx, tcy = (tx1 + tx2) // 2, (ty1 + ty2) // 2
-                    if fold_edge == 'top':
-                        active_rect  = (ax1, acy, ax2, ay2)
-                        texture_rect = (tx1, tcy, tx2, ty2)
-                    elif fold_edge == 'bottom':
-                        active_rect  = (ax1, ay1, ax2, acy)
-                        texture_rect = (tx1, ty1, tx2, tcy)
-                    elif fold_edge == 'left':
-                        active_rect  = (acx, ay1, ax2, ay2)
-                        texture_rect = (tcx, ty1, tx2, ty2)
-                    else:  # right
-                        active_rect  = (ax1, ay1, acx, ay2)
-                        texture_rect = (tx1, ty1, tcx, ty2)
-                    fold_history.append(fold_edge)
-                    fold_edge     = None
-                    fold_progress = 0.0
-                else:
-                    # Released too early → snap back flat
-                    fold_edge     = None
-                    fold_progress = 0.0
+            if was_pinching:
+                if fold_edge is not None:
+                    if fold_progress > 0.3:
+                        # Released past 30 % → commit the edge fold
+                        ax1, ay1, ax2, ay2 = active_rect
+                        acx, acy = (ax1 + ax2) // 2, (ay1 + ay2) // 2
+                        tx1, ty1, tx2, ty2 = texture_rect
+                        tcx, tcy = (tx1 + tx2) // 2, (ty1 + ty2) // 2
+                        if fold_edge == 'top':
+                            active_rect  = (ax1, acy, ax2, ay2)
+                            texture_rect = (tx1, tcy, tx2, ty2)
+                        elif fold_edge == 'bottom':
+                            active_rect  = (ax1, ay1, ax2, acy)
+                            texture_rect = (tx1, ty1, tx2, tcy)
+                        elif fold_edge == 'left':
+                            active_rect  = (acx, ay1, ax2, ay2)
+                            texture_rect = (tcx, ty1, tx2, ty2)
+                        else:  # right
+                            active_rect  = (ax1, ay1, acx, ay2)
+                            texture_rect = (tx1, ty1, tcx, ty2)
+                        fold_history.append(fold_edge)
+                        fold_edge     = None
+                        fold_progress = 0.0
+                    else:
+                        # Released too early → snap back flat
+                        fold_edge     = None
+                        fold_progress = 0.0
+                elif fold_corner is not None:
+                    if fold_corner_size >= 20:  # only commit if dog-ear is at least 20 px
+                        corner_folds.append((fold_corner, fold_corner_size))
+                    fold_corner      = None
+                    fold_corner_size = 0
             grab_pt = None
 
         draw_finger_tips(frame, landmarks, frame_w, frame_h, pinching)
@@ -404,7 +524,7 @@ while True:
     cv2.putText(frame, hud, (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                 (0, 0, 255) if pinching else (0, 255, 0), 3)
-    cv2.putText(frame, f"Folds: {len(fold_history)}  |  Pinch=fold  'c'=clear  'r'=reset  'q'=quit",
+    cv2.putText(frame, f"Folds: {len(fold_history)}  Corners: {len(corner_folds)}  |  Pinch=fold  'c'=clear  'q'=quit",
                 (10, frame_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     cv2.imshow("Origami", frame)
@@ -414,21 +534,27 @@ while True:
         break
     elif key == ord('c'):
         # Unfold: restore paper to its original flat state
-        fold_history   = []
-        active_rect    = paper_rect
+        fold_history     = []
+        corner_folds     = []
+        active_rect      = paper_rect
         _ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
-        texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
-        fold_edge      = None
-        fold_progress  = 0.0
-        grab_pt        = None
+        texture_rect     = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
+        fold_edge        = None
+        fold_progress    = 0.0
+        fold_corner      = None
+        fold_corner_size = 0
+        grab_pt          = None
     elif key == ord('r'):
-        fold_history   = []
-        active_rect    = paper_rect
+        fold_history     = []
+        corner_folds     = []
+        active_rect      = paper_rect
         _ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
-        texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
-        fold_edge      = None
-        fold_progress  = 0.0
-        grab_pt        = None
+        texture_rect     = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
+        fold_edge        = None
+        fold_progress    = 0.0
+        fold_corner      = None
+        fold_corner_size = 0
+        grab_pt          = None
 
 cap.release()
 cv2.destroyAllWindows()
