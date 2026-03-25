@@ -404,7 +404,7 @@ while True:
     cv2.putText(frame, hud, (20, 50),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2,
                 (0, 0, 255) if pinching else (0, 255, 0), 3)
-    cv2.putText(frame, f"Folds: {len(fold_history)}  |  Pinch paper to fold  |  'r' reset  |  'q' quit",
+    cv2.putText(frame, f"Folds: {len(fold_history)}  |  Pinch=fold  'c'=clear  'r'=reset  'q'=quit",
                 (10, frame_h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
     cv2.imshow("Origami", frame)
@@ -412,6 +412,15 @@ while True:
     key = cv2.waitKey(1) & 0xFF
     if key == ord('q'):
         break
+    elif key == ord('c'):
+        # Unfold: restore paper to its original flat state
+        fold_history   = []
+        active_rect    = paper_rect
+        _ar_x1, _ar_y1, _ar_x2, _ar_y2 = paper_rect
+        texture_rect   = (0, 0, _ar_x2 - _ar_x1, _ar_y2 - _ar_y1)
+        fold_edge      = None
+        fold_progress  = 0.0
+        grab_pt        = None
     elif key == ord('r'):
         fold_history   = []
         active_rect    = paper_rect
