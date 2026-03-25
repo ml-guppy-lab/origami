@@ -1,0 +1,38 @@
+----------------------------------------------------------------------------------------------
+************ for my personal reference *******************************************************
+----------------------------------------------------------------------------------------------
+
+git credential reject (to initialize my personal github repo)
+then paste these two lines below and hit enter twice:
+protocol=https
+host=github.com
+
+---required to set my personal email for commits to show on my github commits graph---
+cd /path/to/your/new/repo
+git config user.email "sonalsh250@gmail.com"
+
+initialize repository: git remote add origin https://github.com/ml-guppy-lab/fire_writing.git
+
+git branch --set-upstream-to=origin/main main
+
+------------------------------------------------------------------------------
+VIRTUAL ENVIRONMENT
+------------------------------------------------------------------------------
+python3 -m venv .venv
+source .venv/bin/activate
+
+------------------------------------------------------------------------------
+CREATE requirements.txt
+------------------------------------------------------------------------------
+
+------------------------------------------------------------------------------
+INSTALL DEPENDENCIES
+------------------------------------------------------------------------------
+# NOTE: Homebrew aliases (python3 → Homebrew python3.12) override venv PATH.
+# Always use the explicit venv path — do NOT use bare 'python3' or 'python'.
+.venv/bin/python3 -m pip install --upgrade pip
+.venv/bin/python3 -m pip install -r requirements.txt
+
+
+
+.venv/bin/python3 scripts/handlandmarker.py
