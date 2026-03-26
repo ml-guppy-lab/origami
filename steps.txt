@@ -36,3 +36,9 @@ INSTALL DEPENDENCIES
 
 
 .venv/bin/python3 scripts/origamiRectangle.py
+
+# Terminal 1 — backend
+.venv/bin/python scripts/origami_backend.py
+
+# Terminal 2 — frontend
+cd frontend && npm run dev

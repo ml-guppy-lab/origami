@@ -2,13 +2,20 @@
 # Core Computer Vision Libraries
 # ============================================================================
 
-# OpenCV - The main computer vision library
-# Used for: camera access, image processing, drawing on frames, video handling
-opencv-python==4.9.0.80
+# OpenCV contrib — supports NumPy 2.x
+opencv-contrib-python==4.10.0.84
 
 # MediaPipe - Google's pre-trained ML library for hand tracking
-# Used for: detecting hands and 21 landmarks per hand (including all 5 finger tips)
-# This is the KEY library that makes finger tip detection easy and accurate
 mediapipe==0.10.32
 
-numpy==2.3.0
+numpy>=2
+
+# ============================================================================
+# Web Backend
+# ============================================================================
+
+# FastAPI — the web framework
+fastapi==0.111.0
+
+# Uvicorn — the ASGI server that runs FastAPI (includes WebSocket support)
+uvicorn[standard]==0.29.0
