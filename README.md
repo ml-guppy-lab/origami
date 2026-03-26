@@ -3,6 +3,12 @@
 > A real-time augmented reality origami simulator powered by **MediaPipe Hand Landmarker** and **OpenCV**.  
 > No controllers. No buttons. Just your hands and a pinch. ✨
 
+## 🌐 Live Demo
+
+**[Try it here → https://origami-1-gzsl.onrender.com](https://origami-1-gzsl.onrender.com)**
+
+> ⚠️ The backend runs on Render's free tier and may take ~50 seconds to wake up on the first visit. Just wait a moment and refresh.
+
 ---
 
 ## 📸 Screenshots

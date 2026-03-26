@@ -42,3 +42,6 @@ INSTALL DEPENDENCIES
 
 # Terminal 2 — frontend
 cd frontend && npm run dev
+
+for Render deployment:
+Start command: uvicorn scripts.origami_backend:app --host 0.0.0.0 --port $PORT
