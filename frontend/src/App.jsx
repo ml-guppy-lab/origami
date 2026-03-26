@@ -20,7 +20,7 @@ function Landing({ onStart }) {
       style={{ background: `linear-gradient(135deg, ${PURPLE} 0%, ${PURPLE_MID} 100%)` }}
     >
       <div className="text-center px-4">
-        <div style={{ fontSize: '4.5rem', lineHeight: 1 }}>🦊</div>
+        <div style={{ fontSize: '4.5rem', lineHeight: 1 }}>🐟</div>
 
         <h1
           className="display-3 fw-bold mt-2 mb-1"
@@ -69,6 +69,14 @@ function OrigamiView({ onBack }) {
   const [folds,  setFolds]  = useState(0)
   const [status, setStatus] = useState('Connecting…')
   const [error,  setError]  = useState(null)
+  const [retryKey, setRetryKey] = useState(0)   // incrementing this remounts the effect
+
+  function retry() {
+    setError(null)
+    setFrame(null)
+    setStatus('Connecting…')
+    setRetryKey(k => k + 1)
+  }
 
   useEffect(() => {
     let ws, intervalId, stream
@@ -80,7 +88,7 @@ function OrigamiView({ onBack }) {
         videoRef.current.srcObject = stream
         await videoRef.current.play()
       } catch {
-        setError('Camera access denied. Please allow camera access and reload.')
+        setError('Camera access denied. Grant camera access in your browser\u2019s address bar, then click Try Again.')
         return
       }
 
@@ -127,7 +135,7 @@ function OrigamiView({ onBack }) {
       ws?.close()
       stream?.getTracks().forEach(t => t.stop())
     }
-  }, [])
+  }, [retryKey])
 
   const sendCmd = (key) => {
     if (wsRef.current?.readyState === WebSocket.OPEN)
@@ -141,14 +149,27 @@ function OrigamiView({ onBack }) {
         className="d-flex flex-column align-items-center justify-content-center vh-100"
         style={{ background: PURPLE }}
       >
-        <p className="fs-5 text-center px-4" style={{ color: GOLD }}>{error}</p>
-        <button
-          onClick={onBack}
-          className="btn mt-3"
-          style={{ color: GOLD, border: `1px solid ${GOLD}` }}
-        >
-          ← Back
-        </button>
+        <div style={{ fontSize: '2.5rem' }}>📷</div>
+        <p className="fs-5 text-center px-4 mt-3" style={{ color: GOLD, maxWidth: 420 }}>{error}</p>
+        <div className="d-flex gap-3 mt-4">
+          <button
+            onClick={retry}
+            className="btn px-4 fw-semibold"
+            style={{ background: GOLD, color: PURPLE, borderRadius: '20px', border: 'none' }}
+          >
+            Try Again
+          </button>
+          <button
+            onClick={onBack}
+            className="btn px-4"
+            style={{ color: GOLD, border: `1px solid ${GOLD}`, borderRadius: '20px' }}
+          >
+            ← Back
+          </button>
+        </div>
+        <p className="mt-4 small text-center px-4" style={{ color: GOLD_DIM }}>
+          Click the camera icon 🔒 in your browser's address bar → allow camera → click Try Again
+        </p>
       </div>
     )
   }
@@ -189,23 +210,42 @@ function OrigamiView({ onBack }) {
             border: `2px solid ${GOLD}`,
             boxShadow: `0 0 30px ${GOLD}22`,
             lineHeight: 0,
+            width: '100%',
+            maxWidth: 1100,
           }}
         >
           {frame ? (
             <img
               src={frame}
               alt="Origami live feed"
-              style={{ display: 'block', maxWidth: '100%', maxHeight: '58vh' }}
+              style={{ display: 'block', width: '100%' }}
             />
           ) : (
             <div
               className="d-flex align-items-center justify-content-center"
-              style={{ width: 640, maxWidth: '100%', height: 360, background: PURPLE_MID, color: GOLD }}
+              style={{ width: '100%', aspectRatio: '16/9', background: PURPLE_MID, color: GOLD }}
             >
               Loading camera…
             </div>
           )}
         </div>
+      </div>
+
+      {/* ── fold counter ───────────────────────────────────────────────── */}
+      <div className="d-flex justify-content-center mb-3">
+        <span
+          style={{
+            background: PURPLE_MID,
+            border: `1px solid ${GOLD}55`,
+            borderRadius: '30px',
+            padding: '6px 22px',
+            color: GOLD_DIM,
+            fontSize: '1rem',
+          }}
+        >
+          Folds committed:&nbsp;
+          <strong style={{ color: GOLD, fontSize: '1.2rem' }}>{folds}</strong>
+        </span>
       </div>
 
       {/* ── control buttons ────────────────────────────────────────────── */}

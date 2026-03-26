@@ -63,7 +63,7 @@ def _pinch_pt(lm, fw, fh):
     t, i = lm[4], lm[8]
     return int((t.x+i.x)/2*fw), int((t.y+i.y)/2*fh)
 
-def _paper_rect(fw, fh, size=400):
+def _paper_rect(fw, fh, size=280):
     x1 = (fw - size) // 2
     y1 = (fh - size) // 2
     return x1, y1, x1+size, y1+size
@@ -216,24 +216,31 @@ async def ws_origami(ws: WebSocket):
                 if src is not None:
                     s['tex'] = cv2.resize(src, (x2-x1, y2-y1))
 
+            # ── hand detection (run on clean frame BEFORE paper overlay) ─────
+            # Running MediaPipe after drawing the paper would hide the hand
+            # underneath the paper texture, causing missed detections.
+            rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            result = _detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
+            pinching = False
+            lm_data  = None
+            pp       = None
+
+            if result.hand_landmarks:
+                lm_data  = result.hand_landmarks[0]
+                pinching = _is_pinching(lm_data)
+                pp       = _pinch_pt(lm_data, fw, fh)
+
             # ── draw paper ───────────────────────────────────────────────────
             if s['edge'] is None:
                 _draw_flat(frame, s['ar'], s['tex'], s['tr'])
             else:
                 _draw_folded(frame, s['ar'], s['tr'], s['edge'], s['prog'], s['tex'])
 
-            # ── hand detection ───────────────────────────────────────────────
-            rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = _detector.detect(mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb))
-            pinching = False
-
-            if result.hand_landmarks:
-                lm       = result.hand_landmarks[0]
-                pinching = _is_pinching(lm)
-                pp       = _pinch_pt(lm, fw, fh)
-                col      = (0,0,255) if pinching else (255,0,0)
+            # ── draw finger tip dots on top of paper ─────────────────────────
+            if lm_data is not None:
+                col = (0,0,255) if pinching else (255,0,0)
                 for idx in (4, 8):
-                    l = lm[idx]
+                    l = lm_data[idx]
                     cv2.circle(frame, (int(l.x*fw), int(l.y*fh)), 10, col, -1)
 
                 if pinching:
